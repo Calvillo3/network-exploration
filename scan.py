@@ -25,10 +25,10 @@ def function(input, output):
         #result = subprocess.check_output(["nslookup", "-type=AAAA", line.strip(), "8.8.8.8"],
         #                        timeout=10, stderr=subprocess.STDOUT).decode("utf-8")
         #print(result)
-        print(line)
+        #print(line)
 
         thesocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM) #insecure http using socket.py
-        thesocket.settimeout(10.0)
+        thesocket.settimeout(5.0)
         location = (socket.gethostbyname(line.strip()), 80)
         check = thesocket.connect_ex(location)
         thesocket.close()
@@ -47,14 +47,15 @@ def function(input, output):
             object1["tls_versions"] = []
             object1["root_ca"] = None
 
-        #stuff = serverhttp(line.strip())
 
-        try:    #this is the http_server part D
-            response = requests.get("http://" + line.strip())
-            try: server = response.headers['Server']
-            except: server = None
-        except: server = None
-        object1["http_server"] = server
+        #try:    #this is the http_server part D
+        #    response = requests.get("http://" + line.strip())
+        #    try:
+        #        server = response.headers['Server']
+        #        print('old: ',server)
+        #    except: server = None
+        #except: server = None
+        object1["http_server"] = serverhttp(line.strip())
         #object1["ipv6_addresses"] = ipparse(line, 'AAAA')
         #object1["ipv4_addresses"] = ipparse(line, 'A')
         object1["ipv6_addresses"] = ipparsemoore(line, 'AAAA')
@@ -64,21 +65,32 @@ def function(input, output):
         object1["rdns_names"] = findrdns(object1["ipv4_addresses"])
         object1["rtt_range"] = rtt(object1["ipv4_addresses"])
         #geo location
-        object1["geo-locations"] = geolocate(object1["ipv4_addresses"])
-
+        object1["geo_locations"] = geolocate(object1["ipv4_addresses"])
 
         json_object[line.strip()] = object1   #finish the object
-
-
     with open(output, "w") as f:
         json.dump(json_object, f, sort_keys=True, indent=4)  #dump the entire file
 
 
 def serverhttp(url):
-    result = subprocess.check_output(["telnet", url, "443"], input="").decode("utf-8")
-    result = subprocess.check_output(["GET / HTTP/1.0" + '\r\n' + "Host: google.com" + '\r\n\r\n']).decode("utf-8")
-    print(result)
-    return None
+    #print('waiting')
+    string = "GET / HTTP/1.0\r\nHost: " + url + "\r\n\r\n"
+    string = string.encode('utf-8')
+    try:
+        result = subprocess.check_output(["openssl", "s_client", "-connect", url + ":443", "-ign_eof", "-quiet"],
+                                  input=string, stderr=subprocess.STDOUT,
+                                  timeout=2).decode('utf-8')
+        #print(result)
+        if "Server: " in result:
+            useless, useful = result.split("Server: ", 1)
+            useful, useless = useful.split('\r\n', 1)
+            return useful
+        elif "server: " in result:
+            useless, useful = result.split("server: ", 1)
+            useful, useless = useful.split('\r\n', 1)
+            return useful
+        else: return None
+    except: return None
 
 def geolocate(ips):
     reader = maxminddb.open_database('GeoLite2-City.mmdb')
@@ -188,19 +200,21 @@ def findtls(url):
     #uncomment for now while not on moore
     result = ""
     try:
-        result = subprocess.check_output(["nmap", "--script", "ssl-enum-ciphers", "-p", "443", url], timeout=8, stderr=subprocess.STDOUT).decode("utf-8")
+        result = subprocess.check_output(["nmap", "--script", "ssl-enum-ciphers", "-p", "443", url], timeout=8, stderr=subprocess.DEVNULL).decode("utf-8")
         if "TLSv1.2" in result:
             list.append("TLSv1.2")
         if "TLSv1.1" in result:
             list.append("TLSv1.1")
         if "TLSv1.0" in result:
             list.append("TLSv1.0")
-    except: pass
+    except:
+        pass
     #print(url + ":443")
     try:
-        result = subprocess.check_output(["openssl", "s_client", "-tls1_3", "-connect", url + ":443"], input="").decode("utf-8") #add q here
+        result = subprocess.check_output(["openssl", "s_client", "-tls1_3", "-connect", url + ":443"], input="", stderr=subprocess.DEVNULL, timeout=3).decode("utf-8") #add q here
         #print('uh oh')
-    except: pass
+    except:
+        pass
     #print(result)
     if "TLSv1.3" in result:
         list.append("TLSv1.3")
@@ -216,9 +230,11 @@ def redirect(url, check):
         try: url, extension = url.split('/', 1)
         except:
             extension = ""
-        connection = http.client.HTTPConnection(url)
-        connection.request('GET', '/' + extension)
-        response = connection.getresponse()
+        try:
+            connection = http.client.HTTPConnection(url, timeout=4)
+            connection.request('GET', '/' + extension)
+            response = connection.getresponse()
+        except: return (False,False)
         if response.status >= 400:
             return (False, False)
         secure = response.getheader('strict-transport-security')
@@ -238,10 +254,12 @@ def redirect(url, check):
         try: url, extension = url.split('/', 1)
         except:
             extension = ""
-        connection = http.client.HTTPSConnection(url)
-        connection.request('GET', '/' + extension)
-        response = connection.getresponse()
-        secure = response.getheader('strict-transport-security')
+        try:
+            connection = http.client.HTTPSConnection(url, timeout=4)
+            connection.request('GET', '/' + extension)
+            response = connection.getresponse()
+            secure = response.getheader('strict-transport-security')
+        except: return (False, False)
         #if response.status > 199 and response.status < 300: #Good status code
         #    return True
         #elif response.status > 299 and response.status < 310:  # 30X status code
@@ -256,9 +274,11 @@ def redirect(url, check):
             return (True, True)
         else:
             return (True, False)
-    connection = http.client.HTTPConnection(url)
-    connection.request('GET', '/')
-    response = connection.getresponse()
+    try:
+        connection = http.client.HTTPConnection(url, timeout=4)
+        connection.request('GET', '/')
+        response = connection.getresponse()
+    except: return (False, False)
     if response.status >= 400:
         return (False, False)
     secure = response.getheader('strict-transport-security')
@@ -278,7 +298,7 @@ def ipparse(url, type):
     if type == 'AAAA':
         for curr in resolverslist:
             try:
-                result = subprocess.check_output(["nslookup", "-type=AAAA", url.strip(), curr], timeout=10, stderr=subprocess.STDOUT).decode("utf-8")
+                result = subprocess.check_output(["nslookup", "-type=AAAA", url.strip(), curr], timeout=1, stderr=subprocess.STDOUT).decode("utf-8")
                 if "Non-existent domain" in result:
                     continue
                 if "No IPv6 address" in result:
@@ -303,7 +323,7 @@ def ipparse(url, type):
     if type == 'A':
         for curr in resolverslist:
             try:
-                result = subprocess.check_output(["nslookup", "-type=A", url.strip(), curr], timeout=10, stderr=subprocess.STDOUT).decode("utf-8")
+                result = subprocess.check_output(["nslookup", "-type=A", url.strip(), curr], timeout=1, stderr=subprocess.STDOUT).decode("utf-8")
                 #print(result)
                 if "Non-existent domain" in result:
                     continue
@@ -379,7 +399,7 @@ def ipparsemoore(url, type):
 def root_ca(url):
     answer = None
     try:
-        resultt = subprocess.check_output(["openssl", "s_client", "-connect", url + ":443"], input="", stderr=subprocess.STDOUT).decode("utf-8")
+        resultt = subprocess.check_output(["openssl", "s_client", "-connect", url + ":443"], input="", stderr=subprocess.STDOUT, timeout=2).decode("utf-8")
         useless, string1 = resultt.split("Certificate chain", 1) #gets the text for the chain.
         string1, useless = string1.split("Server certificate", 1)
         arr = string1.split("O = ")
